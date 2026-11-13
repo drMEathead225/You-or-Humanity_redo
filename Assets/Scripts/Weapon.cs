@@ -36,8 +36,6 @@ public class Weapon : MonoBehaviour
     public bool IsReloading { get; private set; }
     public WeaponData Data => data;
 
-    public float ReserveFraction { get; internal set; }
-
     /// <summary>(magazine, reserve) - hook your ammo UI here.</summary>
     public event Action<int, int> OnAmmoChanged;
     /// <summary>Fired every shot - for screen shake, weapon animation, etc.</summary>
@@ -96,6 +94,9 @@ public class Weapon : MonoBehaviour
 
     private void Update()
     {
+        // WeaponSwitcher can re-enable a weapon whose Awake failed (e.g. no WeaponData). Do nothing rather than crash.
+        if (data == null || aimOrigin == null) return;
+
         // Turn the muzzle light back off (this also switches it off at start if it was left on).
         if (muzzleLight != null && muzzleLight.enabled && Time.time >= muzzleLightOffTime)
             muzzleLight.enabled = false;
@@ -229,20 +230,28 @@ public class Weapon : MonoBehaviour
         return ReserveAmmo - before;
     }
 
+    /// <summary>Reserve ammo as a fraction of the maximum, from 0 to 1.</summary>
+    public float ReserveFraction => data != null && data.maxReserve > 0 ? (float)ReserveAmmo / data.maxReserve : 1f;
+
+    /// <summary>Adds ammo as a percentage of this weapon's max reserve, so one pickup suits every gun.</summary>
+    public int AddReserveAmmoPercent(float percent)
+    {
+        if (data == null) return 0;
+
+        int amount = Mathf.Max(1, Mathf.RoundToInt(data.maxReserve * percent / 100f));
+        return AddReserveAmmo(amount);
+    }
+
+    /// <summary>Blocks firing for a moment, used by the weapon switcher when equipping.</summary>
+    public void SetEquipDelay(float seconds)
+    {
+        nextFireTime = Mathf.Max(nextFireTime, Time.time + seconds);
+    }
+
     private void Play(AudioClip clip)
     {
         if (audioSource == null || clip == null) return;
         audioSource.pitch = UnityEngine.Random.Range(0.95f, 1.05f); // tiny variation sounds far less repetitive
         audioSource.PlayOneShot(clip);
-    }
-
-    internal int AddReserveAmmoPercent(float amount)
-    {
-        throw new NotImplementedException();
-    }
-
-    internal void SetEquipDelay(float equipDelay)
-    {
-        throw new NotImplementedException();
     }
 }
