@@ -6,6 +6,7 @@ using UnityEngine;
 /// Hitscan weapon. Attach to the camera (or a weapon object under it).
 /// Behaviour comes from a WeaponData asset, so new guns need no new code.
 /// Uses the classic Input Manager: Fire1 (left mouse) to shoot, R to reload.
+/// Works with WeaponZoom: aiming down sights (right mouse) tightens spread and reduces recoil.
 /// </summary>
 public class Weapon : MonoBehaviour
 {
@@ -18,6 +19,10 @@ public class Weapon : MonoBehaviour
     [Tooltip("Optional - used to add recoil to the camera.")]
     [SerializeField] private FirstPersonController player;
 
+    [Header("Aim down sights")]
+    [Tooltip("Recoil multiplier when fully aimed (1 = same as hip fire).")]
+    [SerializeField, Range(0f, 1f)] private float aimedRecoilMultiplier = 0.6f;
+
     [Header("Effects (all optional)")]
     [SerializeField] private ParticleSystem muzzleFlash;
     [SerializeField] private GameObject hitEffectPrefab;
@@ -26,6 +31,7 @@ public class Weapon : MonoBehaviour
     [Tooltip("A point light at the muzzle that blinks on each shot.")]
     [SerializeField] private Light muzzleLight;
     [SerializeField] private float muzzleLightTime = 0.05f;
+    [Tooltip("Left empty, an AudioSource on this object is used (or added) automatically.")]
     [SerializeField] private AudioSource audioSource;
     [SerializeField] private AudioClip fireClip;
     [SerializeField] private AudioClip emptyClip;
@@ -56,6 +62,18 @@ public class Weapon : MonoBehaviour
 
         if (player == null)
             player = GetComponentInParent<FirstPersonController>();
+
+        // Without an AudioSource the fire / empty / reload clips are silent, so make sure there is one.
+        if (audioSource == null)
+        {
+            audioSource = GetComponent<AudioSource>();
+            if (audioSource == null)
+            {
+                audioSource = gameObject.AddComponent<AudioSource>();
+                audioSource.playOnAwake = false;
+                audioSource.spatialBlend = 0f; // 2D: the player's own gun
+            }
+        }
 
         if (data == null)
         {
@@ -153,8 +171,10 @@ public class Weapon : MonoBehaviour
 
         if (player != null)
         {
-            float yaw = UnityEngine.Random.Range(-data.recoilYaw, data.recoilYaw);
-            player.AddRecoil(data.recoilPitch, yaw);
+            // Aiming down sights steadies the gun: less recoil the further you are zoomed in.
+            float recoil = Mathf.Lerp(1f, aimedRecoilMultiplier, WeaponZoom.AimAmount);
+            float yaw = UnityEngine.Random.Range(-data.recoilYaw, data.recoilYaw) * recoil;
+            player.AddRecoil(data.recoilPitch * recoil, yaw);
         }
 
         OnFired?.Invoke();
@@ -162,11 +182,13 @@ public class Weapon : MonoBehaviour
 
     private Vector3 GetSpreadDirection()
     {
-        if (data.spread <= 0f) return aimOrigin.forward;
+        // WeaponZoom.SpreadMultiplier is 1 at the hip and smaller when aiming down sights (per weapon).
+        float spread = data.spread * WeaponZoom.SpreadMultiplier;
+        if (spread <= 0f) return aimOrigin.forward;
 
         Quaternion offset = Quaternion.Euler(
-            UnityEngine.Random.Range(-data.spread, data.spread),
-            UnityEngine.Random.Range(-data.spread, data.spread),
+            UnityEngine.Random.Range(-spread, spread),
+            UnityEngine.Random.Range(-spread, spread),
             0f);
 
         return aimOrigin.rotation * (offset * Vector3.forward);

@@ -12,7 +12,8 @@ using UnityEngine.AI;
 ///
 /// It creates (or overwrites) everything under Assets/ZombieFPS/ and a new scene:
 /// materials, 3 WeaponData assets, effect + pickup + 3 zombie prefabs, a walled arena with cover,
-/// the player with camera and weapons, all managers, a baked NavMesh, and it adds the scene to Build Settings.
+/// the player with camera and weapons, all managers (including the Black Ops style ZombiesHUD),
+/// a baked NavMesh, and it adds the scene to Build Settings.
 /// Finishes by running the same checks as  Zombie FPS > Validate Current Scene.
 /// </summary>
 public static class ZombieFpsSceneBuilder
@@ -60,6 +61,29 @@ public static class ZombieFpsSceneBuilder
         }
     }
 
+    [MenuItem("Zombie FPS/Add Rain To Current Scene", false, 2)]
+    public static void AddRainMenu()
+    {
+        if (EditorApplication.isPlayingOrWillChangePlaymode)
+        {
+            EditorUtility.DisplayDialog("Zombie FPS", "Stop Play mode first.", "OK");
+            return;
+        }
+
+        EnsureFolder(Root + "/Materials");
+
+        if (Object.FindFirstObjectByType<RainController>() != null)
+        {
+            EditorUtility.DisplayDialog("Zombie FPS", "This scene already has rain.", "OK");
+            return;
+        }
+
+        CreateRain(MakeRainMaterial());
+        EditorSceneManager.MarkSceneDirty(UnityEngine.SceneManagement.SceneManager.GetActiveScene());
+        AssetDatabase.SaveAssets();
+        Debug.Log(LogTag + "Rain added. Save the scene (Ctrl+S).");
+    }
+
     [MenuItem("Zombie FPS/Validate Current Scene", false, 1)]
     public static void ValidateMenu()
     {
@@ -91,6 +115,7 @@ public static class ZombieFpsSceneBuilder
         Material matFace = MakeMat("Zombie_Face", new Color(0.35f, 0.04f, 0.04f), 0f, 0.1f);
         Material matHealth = MakeMat("Pickup_Health", new Color(0.15f, 0.95f, 0.30f), 1.6f, 0.4f);
         Material matAmmo = MakeMat("Pickup_Ammo", new Color(1.00f, 0.80f, 0.15f), 1.6f, 0.4f);
+        Material matRain = MakeRainMaterial();
 
         Progress("Creating weapon data", 0.14f);
         WeaponData pistol = MakeWeaponData("Pistol", "Pistol", 25f, 100f, 1, 0.5f, 4f, false, 12, 48, 120, 1.4f, 1.5f, 0.4f);
@@ -178,8 +203,14 @@ public static class ZombieFpsSceneBuilder
         GameObject playerObject = GameObject.FindGameObjectWithTag("Player");
 
         new GameObject("GameManager").AddComponent<GameManager>();
-        new GameObject("HUD").AddComponent<HUD>();
+
+        // Old HUD stays (other scripts may call it); ZombiesHUD draws the Black Ops style HUD and disables the old one at runtime.
+        var hudObject = new GameObject("HUD");
+        hudObject.AddComponent<HUD>();
+        hudObject.AddComponent<ZombiesHUD>();
+
         new GameObject("Atmosphere").AddComponent<AtmosphereController>();
+        CreateRain(matRain);
 
         var dropper = new GameObject("PickupDropper").AddComponent<PickupDropper>();
         SetRef(dropper, "healthPickupPrefab", healthPickup);
@@ -191,6 +222,17 @@ public static class ZombieFpsSceneBuilder
             new[] { "Walker", "Runner", "Tank" },
             new[] { 1f, 0.5f, 0.25f },
             new[] { 1, 3, 6 });
+
+        // Title screen "YOU OR HUMANITY" with background music from Assets/ZombieFPS/Audio/.
+        var menuObject = new GameObject("MainMenu");
+        var menuAudio = menuObject.AddComponent<AudioSource>();
+        menuAudio.playOnAwake = false;
+        menuAudio.loop = true;
+        menuAudio.spatialBlend = 0f;
+        var mainMenu = menuObject.AddComponent<MainMenu>();
+        AudioClip menuMusic = FindMenuMusic();
+        if (menuMusic != null) SetRef(mainMenu, "music", menuMusic);
+        else Debug.LogWarning(LogTag + $"No music found in {Root}/Audio/. Put an audio file there (e.g. MenuMusic.mp3) and rebuild, or drag one into MainMenu > Music.");
 
         Progress("Saving", 0.94f);
         EditorSceneManager.MarkSceneDirty(scene);
@@ -272,10 +314,21 @@ public static class ZombieFpsSceneBuilder
             SetRef(weapon, "muzzleLight", muzzle);
             SetRef(weapon, "hitEffectPrefab", sparkFx);
             SetRef(weapon, "bloodEffectPrefab", bloodFx);
+
+            // Audio: without an AudioSource the fire / empty / reload clips cannot play.
+            var audio = weaponObject.AddComponent<AudioSource>();
+            audio.playOnAwake = false;
+            audio.spatialBlend = 0f; // 2D: the player's own gun
+            SetRef(weapon, "audioSource", audio);
+
+            // 3D model: Assets/ZombieFPS/Models/<Pistol|Rifle|Shotgun>.prefab (optional).
+            AttachWeaponModel(weaponObject, names[i], playerLayer);
+
             weapons[i] = weapon;
         }
 
         var switcher = camObject.AddComponent<WeaponSwitcher>();
+        camObject.AddComponent<WeaponZoom>(); // hold right mouse to aim down sights
         var so = new SerializedObject(switcher);
         SerializedProperty slots = Prop(so, "slots");
         if (slots != null)
@@ -289,6 +342,43 @@ public static class ZombieFpsSceneBuilder
             }
             so.ApplyModifiedPropertiesWithoutUndo();
         }
+    }
+
+    /// <summary>Picks the menu music from Assets/ZombieFPS/Audio/ - a clip with "menu" in its name, otherwise the first clip.</summary>
+    private static AudioClip FindMenuMusic()
+    {
+        string folder = Root + "/Audio";
+        EnsureFolder(folder);
+
+        AudioClip first = null;
+        foreach (string guid in AssetDatabase.FindAssets("t:AudioClip", new[] { folder }))
+        {
+            var clip = AssetDatabase.LoadAssetAtPath<AudioClip>(AssetDatabase.GUIDToAssetPath(guid));
+            if (clip == null) continue;
+            if (clip.name.ToLowerInvariant().Contains("menu")) return clip;
+            if (first == null) first = clip;
+        }
+        return first;
+    }
+
+    private static void AttachWeaponModel(GameObject weaponObject, string weaponName, int playerLayer)
+    {
+        var modelPrefab = AssetDatabase.LoadAssetAtPath<GameObject>($"{Root}/Models/{weaponName}.prefab");
+        if (modelPrefab == null)
+        {
+            Debug.LogWarning(LogTag + $"No model at {Root}/Models/{weaponName}.prefab - {weaponName} will be invisible.");
+            return;
+        }
+
+        var model = (GameObject)PrefabUtility.InstantiatePrefab(modelPrefab);
+        model.transform.SetParent(weaponObject.transform, false);
+        model.transform.localPosition = new Vector3(0.25f, -0.25f, 0.5f); // hip position: right, down, forward
+        model.transform.localRotation = Quaternion.identity;
+
+        // The gun must not block its own shots.
+        foreach (var c in model.GetComponentsInChildren<Collider>(true)) Object.DestroyImmediate(c);
+        if (playerLayer >= 0)
+            foreach (var t in model.GetComponentsInChildren<Transform>(true)) t.gameObject.layer = playerLayer;
     }
 
     // ------------------------------------------------------------------ spawner
@@ -509,6 +599,26 @@ public static class ZombieFpsSceneBuilder
 
         EditorUtility.SetDirty(mat);
         return mat;
+    }
+
+    private static Material MakeRainMaterial()
+    {
+        // Sprites/Default is an alpha-blended unlit shader that works in every render pipeline.
+        string path = $"{Root}/Materials/FX_Rain.mat";
+        var mat = AssetDatabase.LoadAssetAtPath<Material>(path);
+        if (mat == null)
+        {
+            mat = new Material(Shader.Find("Sprites/Default"));
+            AssetDatabase.CreateAsset(mat, path);
+        }
+        EditorUtility.SetDirty(mat);
+        return mat;
+    }
+
+    private static void CreateRain(Material rainMaterial)
+    {
+        var rain = new GameObject("Rain").AddComponent<RainController>();
+        SetRef(rain, "rainMaterial", rainMaterial);
     }
 
     private static bool UsingScriptableRenderPipeline()
@@ -751,10 +861,16 @@ public static class ZombieFpsSceneBuilder
         // Managers.
         RequireOne<GameManager>(problems, "GameManager");
         RequireOne<HUD>(problems, "HUD");
+        RequireOne<ZombiesHUD>(problems, "ZombiesHUD");
         RequireOne<WaveSpawner>(problems, "WaveSpawner");
         RequireOne<PickupDropper>(problems, "PickupDropper");
         RequireOne<AtmosphereController>(problems, "AtmosphereController");
         RequireOne<WeaponSwitcher>(problems, "WeaponSwitcher");
+        RequireOne<WeaponZoom>(problems, "WeaponZoom");
+        RequireOne<MainMenu>(problems, "MainMenu");
+        var menuCheck = Object.FindFirstObjectByType<MainMenu>();
+        if (menuCheck != null && new SerializedObject(menuCheck).FindProperty("music")?.objectReferenceValue == null)
+            notes.Add("MainMenu has no music clip - the title screen will be silent.");
 
         // Weapons.
         Weapon[] weapons = Object.FindObjectsByType<Weapon>();
@@ -844,7 +960,7 @@ public static class ZombieFpsSceneBuilder
         if (showDialog)
         {
             string body = problems.Count == 0
-                ? "Scene built and all checks passed.\n\nPress Play to test. Controls: WASD, Shift sprint, Space jump, mouse look, LMB fire, R reload, F flashlight, 1-3 / scroll to switch weapons, Esc pause."
+                ? "Scene built and all checks passed.\n\nPress Play to test. Controls: WASD, Shift sprint, Space jump, mouse look, LMB fire, RMB aim/zoom, R reload, F flashlight, 1-3 / scroll to switch weapons, Esc pause."
                 : "Scene built, but " + summary + "\n\n(Full details are in the Console.)";
             EditorUtility.DisplayDialog("Zombie FPS", body, "OK");
         }
